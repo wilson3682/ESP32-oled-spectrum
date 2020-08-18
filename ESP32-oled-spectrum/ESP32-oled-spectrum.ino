@@ -25,7 +25,7 @@
                                       //  in less aliasing. Only necessary when sampling
                                       //  at under 44.1 kHz, and raises overhead.
 // FFT settings
-#define SAMPLES 1024                  // Must be a power of 2. Raise for higher resolution
+#define SAMPLES 2048                  // Must be a power of 2. Raise for higher resolution
                                       //  (less banding) and lower for faster performance.
                                       //  Currently cannot greater than 1024 due to I2S.
 #define SAMPLING_FREQUENCY 44100      // Hz, raise for greater frequency range, decrease to
@@ -54,7 +54,7 @@
 
 // Declaration for an SSD1306 display connected to I2C (SDA, SCL pins)
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1, 1000000UL);
-// Microphone input is 39
+// Microphone input is 39, currently disabled
 // 3.5mm input is 36
 
 /* Global constants, calculated from user-defined values */
@@ -120,12 +120,12 @@ void Task1code( void * pvParameters ){
     while(!analogBuffer_availible) watchdogReset();
     analogBuffer_availible = false;   // Closes off buffer to prevent corruption
     // Reads entire circular buffer, starting from analogBuffer_index
-    size_t bytes_read;
     int16_t temp_buffer[SAMPLES];
-    i2sRead(temp_buffer);
+    int samples_read = i2sRead(temp_buffer);
+    for(int i = 0; i < samples_read; i++) analogBuffer_store(temp_buffer[i]);
     for(int i = 0; i < SAMPLES; i++){
-      // vReal[i] = analogBuffer[(i+analogBuffer_index)%SAMPLES]*2;
-      vReal[i] = int16_t(temp_buffer[i])*2;
+      vReal[i] = analogBuffer[(i+analogBuffer_index)%SAMPLES]*2;
+      //vReal[i] = int16_t(temp_buffer[i])*2;
       sum += vReal[i];
     }
     analogBuffer_availible = true;    // Restores access to buffer
@@ -285,7 +285,7 @@ void i2sInit(){
     .communication_format = I2S_COMM_FORMAT_I2S_MSB,
     .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
     .dma_buf_count = 2,
-    .dma_buf_len = SAMPLES,
+    .dma_buf_len = 1024,
     .use_apll = false,
     .tx_desc_auto_clear = false,
     .fixed_mclk = 0
@@ -295,14 +295,16 @@ void i2sInit(){
    i2s_adc_enable(I2S_NUM_0);
 }
 
-void i2sRead(int16_t* inputBuffer){
+size_t i2sRead(int16_t* inputBuffer){
   size_t bytes_read;
   uint16_t readBuffer[SAMPLES];
-  i2s_read(I2S_NUM_0, readBuffer, SAMPLES*sizeof(uint16_t), &bytes_read, portMAX_DELAY);
-  for(int i = 0; i < SAMPLES; i++){
+  i2s_read(I2S_NUM_0, readBuffer, SAMPLES*sizeof(uint16_t), &bytes_read, 1);
+  size_t samples_read = bytes_read/sizeof(uint16_t);
+  for(int i = 0; i < samples_read; i++){
     readBuffer[i] = offset - readBuffer[i];
     inputBuffer[i] = int16_t(readBuffer[i]) - 2048;
   }
+  return samples_read;
 }
 
 // Stores the passed value into a SAMPLES-sized circular buffer called analogBuffer,
