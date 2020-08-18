@@ -9,6 +9,9 @@
 #include "soc/timer_group_struct.h"
 #include "soc/timer_group_reg.h"
 
+#include <driver/i2s.h>
+#define ADC_INPUT ADC1_CHANNEL_0 // pin 36, called VP
+
 #include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
@@ -22,9 +25,9 @@
                                       //  in less aliasing. Only necessary when sampling
                                       //  at under 44.1 kHz, and raises overhead.
 // FFT settings
-#define SAMPLES 2048                  // Must be a power of 2. Raise for higher resolution
+#define SAMPLES 1024                  // Must be a power of 2. Raise for higher resolution
                                       //  (less banding) and lower for faster performance.
-                                      //  Currently cannot greater than 2048.
+                                      //  Currently cannot greater than 1024 due to I2S.
 #define SAMPLING_FREQUENCY 44100      // Hz, raise for greater frequency range, decrease to
                                       //  reduce banding
 #define MAX_FREQUENCY 20000           // Hz, must be 1/2 of sampling frequency or less
@@ -85,41 +88,6 @@ void watchdogReset();
 //*Flash display function prototype removed
 int8_t int_sqrt(int16_t val);
 
-/* Core 0 Interrupt thread */
-hw_timer_t * timer = NULL;
-void IRAM_ATTR onTimer(){
-  // Basic function is to record new values for circular analogBuffer, but in cases where
-  // the interrupt is triggered while the buffer is being read from, for the sake of
-  // accuracy the values must be stored in a contingency buffer. Then, when the interrupt
-  // is triggered againt and the reading is over, the values are transferred from the
-  // contingency buffer to analogBuffer.
-  // Moreover, by sampling at SAMPLING_FREQUENCY*OVERSAMPLE and taking the average of
-  // OVERSAMPLE samples, the original sampling frequency is preserved, and and digital
-  // filter with a Nyquist corner frequency
-  static int tempBuffer[OVERSAMPLE];
-  static int tempBuffer_index = 0;
-  tempBuffer[tempBuffer_index++] = analogRead(inputPin)-2048;
-  tempBuffer_index %= OVERSAMPLE;
-
-  if(tempBuffer_index == 0){
-    int virtual_reading = 0;
-    for(int i = 0; i < OVERSAMPLE; i++) virtual_reading += tempBuffer[i];
-    
-    static int contigBuffer[SAMPLES];
-    static int contigBuffer_index = 0;
-    if(!analogBuffer_availible){
-      contigBuffer[contigBuffer_index] = virtual_reading;
-      contigBuffer_index++;
-    }
-    else{
-      for(int i = 0; i < contigBuffer_index; i++)
-        analogBuffer_store(contigBuffer[i]);
-      contigBuffer_index = 0;
-      analogBuffer_store(virtual_reading);
-    }
-  }
-}
-
 /* Core 0 thread */
 TaskHandle_t Task1;
 void Task1code( void * pvParameters ){
@@ -129,11 +97,6 @@ void Task1code( void * pvParameters ){
     if(i == 0) log_fn[i] = MIN_FREQUENCY * pow(2.,f_step/2.);
     else log_fn[i] = (float)log_fn[i-1] * pow(2.,f_step);
   }
-
-  timer = timerBegin(1, 80, true);
-  timerAttachInterrupt(timer, &onTimer, true);
-  timerAlarmWrite(timer, sample_period, true);
-  timerAlarmEnable(timer);
   
   while(true){
     // Debouncing code that checks if the BOOT button has been pressed and, if
@@ -157,9 +120,12 @@ void Task1code( void * pvParameters ){
     while(!analogBuffer_availible) watchdogReset();
     analogBuffer_availible = false;   // Closes off buffer to prevent corruption
     // Reads entire circular buffer, starting from analogBuffer_index
+    size_t bytes_read;
+    int16_t temp_buffer[SAMPLES];
+    i2sRead(temp_buffer);
     for(int i = 0; i < SAMPLES; i++){
-      // Samples are doubled to maximize precision at later stages
-      vReal[i] = analogBuffer[(i+analogBuffer_index)%SAMPLES]*2;
+      // vReal[i] = analogBuffer[(i+analogBuffer_index)%SAMPLES]*2;
+      vReal[i] = int16_t(temp_buffer[i])*2;
       sum += vReal[i];
     }
     analogBuffer_availible = true;    // Restores access to buffer
@@ -273,6 +239,8 @@ void setup() {
     display.begin(SSD1306_SWITCHCAPVCC, 0x3C);
     display.clearDisplay();
     display.display();
+
+    i2sInit();
     
     xTaskCreatePinnedToCore(
               Task1code,   /* Task function. */
@@ -282,8 +250,9 @@ void setup() {
               0,           /* priority of the task */
               &Task1,      /* Task handle to keep track of created task */
               0);          /* pin task to core 0 */ 
-    delay(500);
 }
+
+uint16_t offset = (int)ADC_INPUT * 0x1000 + 0xFFF;
 
 void loop() {
     // Double-buffered output with page flipping to display
@@ -305,6 +274,35 @@ void loop() {
     display.display();
     
     refresh++;
+}
+
+void i2sInit(){
+  i2s_config_t i2s_config = {
+    .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX | I2S_MODE_ADC_BUILT_IN),
+    .sample_rate =  SAMPLING_FREQUENCY,           // The format of the signal using ADC_BUILT_IN
+    .bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT, // is fixed at 12bit, stereo, MSB
+    .channel_format = I2S_CHANNEL_FMT_ONLY_LEFT,
+    .communication_format = I2S_COMM_FORMAT_I2S_MSB,
+    .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
+    .dma_buf_count = 2,
+    .dma_buf_len = SAMPLES,
+    .use_apll = false,
+    .tx_desc_auto_clear = false,
+    .fixed_mclk = 0
+   };
+   i2s_driver_install(I2S_NUM_0, &i2s_config, 0, NULL);
+   i2s_set_adc_mode(ADC_UNIT_1, ADC_INPUT);
+   i2s_adc_enable(I2S_NUM_0);
+}
+
+void i2sRead(int16_t* inputBuffer){
+  size_t bytes_read;
+  uint16_t readBuffer[SAMPLES];
+  i2s_read(I2S_NUM_0, readBuffer, SAMPLES*sizeof(uint16_t), &bytes_read, portMAX_DELAY);
+  for(int i = 0; i < SAMPLES; i++){
+    readBuffer[i] = offset - readBuffer[i];
+    inputBuffer[i] = int16_t(readBuffer[i]) - 2048;
+  }
 }
 
 // Stores the passed value into a SAMPLES-sized circular buffer called analogBuffer,
