@@ -24,13 +24,15 @@
 #define OVERSAMPLE 1                  // Number of readings collected per sample, results
                                       //  in less aliasing. Only necessary when sampling
                                       //  at under 44.1 kHz, and raises overhead.
+#define I2S_BUFFER_SIZE 1024          // I2S buffer size in samples. Cannot exceed 1024.
+                                      //  Effects of altering this currently unknown.
 // FFT settings
 #define SAMPLES 2048                  // Must be a power of 2. Raise for higher resolution
                                       //  (less banding) and lower for faster performance.
-                                      //  Currently cannot greater than 1024 due to I2S.
 #define SAMPLING_FREQUENCY 44100      // Hz, raise for greater frequency range, decrease to
                                       //  reduce banding
-#define MAX_FREQUENCY 20000           // Hz, must be 1/2 of sampling frequency or less
+#define MAX_FREQUENCY 8000            // Hz, must be 1/2 of sampling frequency or less.
+                                      //  Seems to be bugged beyong 8khz. Artifacting?
 #define MIN_FREQUENCY 40              // Hz, cannot be 0, decreasing causes banding
 // Post-processing settings
 #define TIME_FACTOR 4                 // Configures rise smoothing function (raise
@@ -48,7 +50,8 @@
 // Device settings
 #define DEBOUNCE 500                  // Debounce time in milliseconds for BOOT button
 #define COLUMNS 32                    // Number of columns to display, fewer columns
-                                      //  will cause less banding
+                                      //  will cause less banding. Must be a factor of
+                                      //  the screen width.
 #define COLUMN_SIZE 1                 // Size of columns in pixels
 
 
@@ -285,7 +288,7 @@ void i2sInit(){
     .communication_format = I2S_COMM_FORMAT_I2S_MSB,
     .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
     .dma_buf_count = 2,
-    .dma_buf_len = 1024,
+    .dma_buf_len = I2S_BUFFER_SIZE,
     .use_apll = false,
     .tx_desc_auto_clear = false,
     .fixed_mclk = 0
@@ -297,8 +300,8 @@ void i2sInit(){
 
 size_t i2sRead(int16_t* inputBuffer){
   size_t bytes_read;
-  uint16_t readBuffer[SAMPLES];
-  i2s_read(I2S_NUM_0, readBuffer, SAMPLES*sizeof(uint16_t), &bytes_read, 1);
+  uint16_t readBuffer[I2S_BUFFER_SIZE];
+  i2s_read(I2S_NUM_0, readBuffer, I2S_BUFFER_SIZE*sizeof(uint16_t), &bytes_read, 0);
   size_t samples_read = bytes_read/sizeof(uint16_t);
   for(int i = 0; i < samples_read; i++){
     readBuffer[i] = offset - readBuffer[i];
