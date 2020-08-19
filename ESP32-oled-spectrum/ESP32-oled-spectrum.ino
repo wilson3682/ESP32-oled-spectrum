@@ -24,7 +24,7 @@
 #define OVERSAMPLE 1                  // Number of readings collected per sample, results
                                       //  in less aliasing. Only necessary when sampling
                                       //  at under 44.1 kHz, and raises overhead.
-#define I2S_BUFFER_SIZE 1024          // I2S buffer size in samples. Cannot exceed 1024.
+#define I2S_BUFFER_SIZE 512           // I2S buffer size in samples. Cannot exceed 1024.
                                       //  Effects of altering this currently unknown.
 // FFT settings
 #define SAMPLES 2048                  // Must be a power of 2. Raise for higher resolution
